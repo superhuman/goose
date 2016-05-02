@@ -1,3 +1,7 @@
+Unofficial clone of [liamstask/goose](https://bigbucket.org/liamstask/goose) that removes all backends except postgres.
+
+Unfortunately the sqlite3 backend is an enourmously slow download.
+
 # goose
 
 goose is a database migration tool.
