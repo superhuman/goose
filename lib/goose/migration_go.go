@@ -3,6 +3,7 @@ package goose
 import (
 	"bytes"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -19,6 +20,15 @@ type templateData struct {
 	Direction  bool
 	Func       string
 	InsertStmt string
+}
+
+type SharedConf struct {
+	Name          string
+	OpenStr       string
+	Import        string
+	Env           string
+	MigrationsDir string
+	PgSchema      string
 }
 
 func init() {
@@ -48,8 +58,17 @@ func runGoMigration(conf *DBConf, path string, version int64, direction bool) er
 		directionStr = "Up"
 	}
 
+	sharedConf := SharedConf{
+		Name:          conf.Driver.Name,
+		OpenStr:       conf.Driver.OpenStr,
+		Import:        conf.Driver.Import,
+		Env:           conf.Env,
+		MigrationsDir: conf.MigrationsDir,
+		PgSchema:      conf.PgSchema,
+	}
+
 	var bb bytes.Buffer
-	if err := gob.NewEncoder(&bb).Encode(conf); err != nil {
+	if err := json.NewEncoder(&bb).Encode(sharedConf); err != nil {
 		return err
 	}
 
@@ -102,18 +121,40 @@ package main
 import (
 	"log"
 	"bytes"
-	"encoding/gob"
+	"encoding/json"
 
 	_ "{{.Import}}"
 	"github.com/superhuman/goose/lib/goose"
 )
 
+type SharedConf struct {
+	Name          string
+	OpenStr       string
+	Import        string
+	Env           string
+	MigrationsDir string
+	PgSchema      string
+}
+
 func main() {
 
-	var conf goose.DBConf
+	var sharedConf SharedConf
+
 	buf := bytes.NewBuffer({{ .Conf }})
-	if err := gob.NewDecoder(buf).Decode(&conf); err != nil {
-		log.Fatal("gob.Decode - ", err)
+	if err := json.NewDecoder(buf).Decode(&sharedConf); err != nil {
+		log.Fatal("json.Decode - ", err)
+	}
+
+	conf := goose.DBConf{
+		MigrationsDir: sharedConf.MigrationsDir,
+		Env: sharedConf.Env,
+		PgSchema: sharedConf.PgSchema,
+		Driver: goose.DBDriver{
+			Name: sharedConf.Name,
+			OpenStr: sharedConf.OpenStr,
+			Import: sharedConf.Import,
+			Dialect: goose.PostgresDialect{},
+		},
 	}
 
 	db, err := goose.OpenDBFromDBConf(&conf)
