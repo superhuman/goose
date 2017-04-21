@@ -14,7 +14,7 @@ func TestMigrationMapSortUp(t *testing.T) {
 	ms = append(ms, newMigration(20129000, "test"))
 	ms = append(ms, newMigration(20127000, "test"))
 
-	ms.Sort(true) // sort Upwards
+	ms.Sort("up")
 
 	sorted := []int64{20120000, 20127000, 20128000, 20129000}
 
@@ -31,7 +31,7 @@ func TestMigrationMapSortDown(t *testing.T) {
 	ms = append(ms, newMigration(20129000, "test"))
 	ms = append(ms, newMigration(20127000, "test"))
 
-	ms.Sort(false) // sort Downwards
+	ms.Sort("down")
 
 	sorted := []int64{20129000, 20128000, 20127000, 20120000}
 

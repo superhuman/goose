@@ -45,7 +45,7 @@ func newMigration(v int64, src string) *Migration {
 	return &Migration{v, -1, -1, src}
 }
 
-func RunMigrations(conf *DBConf, migrationsDir string, target int64) (err error) {
+func RunMigrations(conf *DBConf, migrationsDir string, target int64, direction string) (err error) {
 
 	db, err := OpenDBFromDBConf(conf)
 	if err != nil {
@@ -53,40 +53,42 @@ func RunMigrations(conf *DBConf, migrationsDir string, target int64) (err error)
 	}
 	defer db.Close()
 
-	return RunMigrationsOnDb(conf, migrationsDir, target, db)
+	return RunMigrationsOnDb(conf, migrationsDir, target, db, direction)
 }
 
 // Runs migration on a specific database instance.
-func RunMigrationsOnDb(conf *DBConf, migrationsDir string, target int64, db *sql.DB) (err error) {
+func RunMigrationsOnDb(conf *DBConf, migrationsDir string, target int64, db *sql.DB, direction string) (err error) {
 	current, err := EnsureDBVersion(conf, db)
 	if err != nil {
 		return err
 	}
 
-	migrations, err := CollectMigrations(migrationsDir, current, target)
+	migrations, err := GetMigrationsFromDisk(migrationsDir, target)
+	if err != nil {
+		return err
+	}
+	applied, err := GetAppliedMigrations(conf, db)
 	if err != nil {
 		return err
 	}
 
-	if len(migrations) == 0 {
+	todo := migrationSorter(migrations).Todo(target, applied, direction)
+
+	if len(todo) == 0 {
 		fmt.Printf("goose: no migrations to run. current version: %d\n", current)
 		return nil
 	}
 
-	ms := migrationSorter(migrations)
-	direction := current < target
-	ms.Sort(direction)
-
 	fmt.Printf("goose: migrating db environment '%v', current version: %d, target: %d\n",
 		conf.Env, current, target)
 
-	for _, m := range ms {
+	for _, m := range todo {
 
 		switch filepath.Ext(m.Source) {
 		case ".go":
-			err = runGoMigration(conf, m.Source, m.Version, direction)
+			err = runGoMigration(conf, m.Source, m.Version, direction == "up")
 		case ".sql":
-			err = runSQLMigration(conf, db, m.Source, m.Version, direction)
+			err = runSQLMigration(conf, db, m.Source, m.Version, direction == "up")
 		}
 
 		if err != nil {
@@ -101,7 +103,7 @@ func RunMigrationsOnDb(conf *DBConf, migrationsDir string, target int64, db *sql
 
 // collect all the valid looking migration scripts in the
 // migrations folder, and key them by version
-func CollectMigrations(dirpath string, current, target int64) (m []*Migration, err error) {
+func GetMigrationsFromDisk(dirpath string, target int64) (m []*Migration, err error) {
 
 	// extract the numeric component of each migration,
 	// filter out any uninteresting files,
@@ -117,9 +119,7 @@ func CollectMigrations(dirpath string, current, target int64) (m []*Migration, e
 				}
 			}
 
-			if versionFilter(v, current, target) {
-				m = append(m, newMigration(v, name))
-			}
+			m = append(m, newMigration(v, name))
 		}
 
 		return nil
@@ -128,23 +128,10 @@ func CollectMigrations(dirpath string, current, target int64) (m []*Migration, e
 	return m, nil
 }
 
-func versionFilter(v, current, target int64) bool {
-
-	if target > current {
-		return v > current && v <= target
-	}
-
-	if target < current {
-		return v <= current && v > target
-	}
-
-	return false
-}
-
-func (ms migrationSorter) Sort(direction bool) {
+func (ms migrationSorter) Sort(direction string) {
 
 	// sort ascending or descending by version
-	if direction {
+	if direction == "up" {
 		sort.Sort(ms)
 	} else {
 		sort.Sort(sort.Reverse(ms))
@@ -160,6 +147,31 @@ func (ms migrationSorter) Sort(direction bool) {
 		}
 		ms[i].Previous = prev
 	}
+}
+
+func (ms migrationSorter) Todo(target int64, applied map[int64]bool, direction string) []*Migration {
+
+	ms.Sort(direction)
+
+	migrations := []*Migration{}
+
+	for _, m := range ms {
+		if shouldApplyMigration(m, target, applied, direction) {
+			migrations = append(migrations, m)
+		}
+	}
+
+	return migrations
+}
+
+func shouldApplyMigration(m *Migration, target int64, applied map[int64]bool, direction string) bool {
+	if direction == "down" {
+		return m.Version > target && applied[m.Version]
+	} else if direction == "up" {
+		return m.Version <= target && !applied[m.Version]
+	}
+
+	panic("Invalid direction: " + direction)
 }
 
 // look for migration scripts with names in the form:
@@ -185,6 +197,30 @@ func NumericComponent(name string) (int64, error) {
 	}
 
 	return n, e
+}
+
+func GetAppliedMigrations(conf *DBConf, db *sql.DB) (map[int64]bool, error) {
+	versions := make(map[int64]bool)
+
+	rows, err := db.Query("SELECT version_id, is_applied FROM goose_db_version ORDER BY tstamp")
+	if err != nil {
+		if err == ErrTableDoesNotExist {
+			return versions, createVersionTable(conf, db)
+		}
+		return versions, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var row MigrationRecord
+		if err = rows.Scan(&row.VersionId, &row.IsApplied); err != nil {
+			log.Fatal("error scanning rows:", err)
+		}
+
+		versions[row.VersionId] = row.IsApplied
+	}
+
+	return versions, nil
 }
 
 // retrieve the current version for this DB.
